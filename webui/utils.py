@@ -16,6 +16,12 @@ _LAYER_ORDER_MAP: Dict[str, int] = {tag: i for i, tag in enumerate(LAYER_ORDER)}
 _last_vram_check: Tuple[float, Tuple[int, int]] = (0.0, (0, 0))
 _VRAM_CACHE_SECONDS: float = 1.0
 
+_pass_state: Dict[str, Any] = {
+    "stage": "",
+    "last_progress_pct": -1,
+    "pass_count": 0,
+}
+
 
 def _tag_sort_key(tag: str) -> int:
     return _LAYER_ORDER_MAP.get(tag, len(LAYER_ORDER))
@@ -61,6 +67,19 @@ def parse_log_status(log_path: str) -> str:
             current_stage = label
             current_stage_keyword = keyword
 
+    # Track LayerDiff passes (body -> head)
+    if "Running LayerDiff" in current_stage:
+        # Check if stage changed
+        if _pass_state["stage"] != current_stage_keyword:
+            _pass_state["stage"] = current_stage_keyword
+            _pass_state["last_progress_pct"] = -1
+            _pass_state["pass_count"] = 0
+    elif current_stage_keyword and _pass_state.get("stage"):
+        # Reset when moving to a different stage
+        _pass_state["stage"] = ""
+        _pass_state["last_progress_pct"] = -1
+        _pass_state["pass_count"] = 0
+
     # Extract progress from AFTER the current stage marker
     progress_line = ""
     if current_stage_keyword:
@@ -81,6 +100,23 @@ def parse_log_status(log_path: str) -> str:
         cur = last_match.group(2)
         total = last_match.group(3)
         pct_int = int(pct)
+        
+        # Detect pass transitions for LayerDiff (body -> head)
+        if "Running LayerDiff" in current_stage:
+            last_pct = _pass_state.get("last_progress_pct", -1)
+            
+            # Detect progress reset (100% -> 0% means new pass started)
+            if last_pct >= 95 and pct_int <= 5 and _pass_state["pass_count"] == 0:
+                _pass_state["pass_count"] = 1
+            
+            _pass_state["last_progress_pct"] = pct_int
+            
+            # Update stage label based on pass count
+            if _pass_state["pass_count"] == 0:
+                current_stage = "🎨 Running LayerDiff - Body Pass (hair, clothes, etc.)"
+            else:
+                current_stage = "🎨 Running LayerDiff - Head Pass (face, eyes, etc.)"
+        
         filled = pct_int // 5
         empty = 20 - filled
         progress_bar = "█" * filled + "·" * empty
