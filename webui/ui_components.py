@@ -1,8 +1,11 @@
 """UI Components and theme configuration for See-through."""
 
+from typing import Any, Callable, Tuple
+
 import gradio as gr
 
 from .config import CUSTOM_CSS
+from .settings import load_settings, save_settings
 
 
 def create_theme():
@@ -26,17 +29,17 @@ def create_theme():
     )
 
 
-def build_ui(run_inference_fn, open_folder_fn):
+def build_ui(start_inference_fn: Callable, poll_inference_fn: Callable, open_folder_fn: Callable) -> Tuple[Any, Any, str]:
     """Build and return the Gradio UI Blocks and configuration."""
     theme = create_theme()
+    saved = load_settings()
 
-    with gr.Blocks(title="See-through UI", theme=theme, css=CUSTOM_CSS) as demo:
-        # State: output folder path
+    with gr.Blocks(title="See-through UI") as demo:
         output_path_state = gr.State(value="")
 
         gr.Markdown(
             "# 🔍 See-through — Anime Illustration Layer Decomposition\n"
-            "Performs semantic decomposition of one anime illustration into up to 23 layers.\n"
+            "Performs semantic decomposition of one anime illustration into up to 24 layers.\n"
             "[GitHub](https://github.com/shitagaki-lab/see-through) | "
             "[Paper](https://arxiv.org/abs/2602.03749) | "
             "SIGGRAPH 2026",
@@ -44,7 +47,6 @@ def build_ui(run_inference_fn, open_folder_fn):
         )
 
         with gr.Row():
-            # --- Left: Settings ---
             with gr.Column(scale=1, min_width=320):
                 input_image = gr.Image(type="filepath", label="Input Image", height=350)
 
@@ -54,38 +56,37 @@ def build_ui(run_inference_fn, open_folder_fn):
                             "NF4 Quantized (Recommended・VRAM ~7GB)",
                             "Full bf16 (High Quality・VRAM ~10GB)",
                         ],
-                        value="NF4 Quantized (Recommended・VRAM ~7GB)",
+                        value=saved.get("mode", "NF4 Quantized (Recommended・VRAM ~7GB)"),
                         label="Inference Mode",
                     )
                     with gr.Row():
                         resolution = gr.Slider(
-                            minimum=512, maximum=2048, step=64, value=768,
+                            minimum=512, maximum=2048, step=64, value=saved.get("resolution", 768),
                             label="Resolution",
                             info="512: ~4GB / 768: ~5GB / 1024: ~7GB / 1280: ~9GB (NF4)",
                         )
                         resolution_preset = gr.Dropdown(
                             choices=["512", "768", "1024", "1280"],
-                            value="768",
+                            value=str(saved.get("resolution", 768)),
                             label="Preset",
                             info="Quick select resolution",
                         )
                     inference_steps = gr.Slider(
-                        minimum=10, maximum=50, step=5, value=20,
+                        minimum=10, maximum=50, step=5, value=saved.get("inference_steps", 20),
                         label="Inference Steps",
                         info="Lower = faster but lower quality",
                     )
                     cpu_offload = gr.Checkbox(
-                        value=False, label="CPU Offload",
+                        value=saved.get("cpu_offload", False), label="CPU Offload",
                         info="Offloads models to CPU for minimal VRAM (~4GB) but slower",
                     )
                     with gr.Row():
-                        seed = gr.Number(value=42, label="Seed Value", precision=0, minimum=0)
+                        seed = gr.Number(value=saved.get("seed", 42), label="Seed Value", precision=0, minimum=0)
                         tblr_split = gr.Checkbox(
-                            value=True, label="Split Left/Right",
+                            value=saved.get("tblr_split", True), label="Split Left/Right",
                             info="Separates hands, eyes, etc. left and right",
                         )
 
-            # --- Right: Gallery + Actions ---
             with gr.Column(scale=2):
                 gallery = gr.Gallery(
                     label="Layer Preview", columns=4,
@@ -108,22 +109,38 @@ def build_ui(run_inference_fn, open_folder_fn):
                     elem_classes=["header-text"],
                 )
 
-            # --- Events ---
-            resolution_preset.change(
-                fn=lambda x: int(x),
-                inputs=[resolution_preset],
-                outputs=[resolution],
-            )
+                timer = gr.Timer(value=0.5, active=False)
 
-            run_btn.click(
-                fn=run_inference_fn,
-                inputs=[input_image, mode, resolution, seed, tblr_split, inference_steps, cpu_offload],
-                outputs=[gallery, output_path_state, status],
-            )
+        def start_run(image, mode_val, res, seed_val, split, steps, offload):
+            save_settings(mode=mode_val, resolution=res, seed=seed_val, tblr_split=split, inference_steps=steps, cpu_offload=offload)
+            save_dir, status = start_inference_fn(image, mode_val, res, seed_val, split, steps, offload)
+            return save_dir, status, gr.Timer(active=True)
 
-            open_folder_btn.click(
-                fn=open_folder_fn,
-                inputs=[output_path_state],
-            )
+        def on_timer_tick(save_dir):
+            layers, save_dir, status, timer_update = poll_inference_fn(save_dir)
+            return layers, save_dir, status, timer_update
+
+        resolution_preset.change(
+            fn=lambda x: int(x),
+            inputs=[resolution_preset],
+            outputs=[resolution],
+        )
+
+        run_btn.click(
+            fn=start_run,
+            inputs=[input_image, mode, resolution, seed, tblr_split, inference_steps, cpu_offload],
+            outputs=[output_path_state, status, timer],
+        )
+
+        timer.tick(
+            fn=on_timer_tick,
+            inputs=[output_path_state],
+            outputs=[gallery, output_path_state, status, timer],
+        )
+
+        open_folder_btn.click(
+            fn=open_folder_fn,
+            inputs=[output_path_state],
+        )
 
     return demo, theme, CUSTOM_CSS

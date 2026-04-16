@@ -1,17 +1,16 @@
 """Configuration constants and paths for See-through UI."""
 
 from pathlib import Path
+from typing import Dict, List, Tuple
 
-# Root paths - points to the see-through installation (same level as webui)
-SEETHROUGH_ROOT = Path(__file__).resolve().parent.parent / "see-through"
-SCRIPT_PATH = SEETHROUGH_ROOT / "inference" / "scripts" / "inference_psd_quantized.py"
-HF_CACHE_DIR = SEETHROUGH_ROOT / ".hf_cache"
-OUTPUT_BASE = SEETHROUGH_ROOT / "workspace" / "ui_output"
+SEETHROUGH_ROOT: Path = Path(__file__).resolve().parent.parent / "see-through"
+SCRIPT_PATH: Path = SEETHROUGH_ROOT / "inference" / "scripts" / "inference_psd_quantized.py"
+HF_CACHE_DIR: Path = SEETHROUGH_ROOT / ".hf_cache"
+OUTPUT_BASE: Path = SEETHROUGH_ROOT / "workspace" / "ui_output"
 
-# Layer configuration
-SKIP_TAGS = {"src_img", "src_head", "reconstruction"}
+SKIP_TAGS: set = {"src_img", "src_head", "reconstruction"}
 
-LAYER_ORDER = [
+LAYER_ORDER: List[str] = [
     "front hair", "back hair", "head", "neck", "neckwear",
     "topwear", "handwear", "bottomwear", "legwear", "footwear",
     "tail", "wings", "objects",
@@ -19,8 +18,7 @@ LAYER_ORDER = [
     "eyelash", "eyewear", "ears", "earwear", "nose", "mouth",
 ]
 
-# Stage detection markers for log parsing
-STAGE_MARKERS = [
+STAGE_MARKERS: List[Tuple[str, str]] = [
     ("Quantized inference:", "📋 Inference Settings"),
     ("Building LayerDiff", "🔨 Building LayerDiff Pipeline..."),
     ("[NF4 fix]", "🔧 Fixing NF4 Text Encoder..."),
@@ -34,8 +32,7 @@ STAGE_MARKERS = [
     ("PSD assembly done", "✅ PSD Completed"),
 ]
 
-# UI Theme configuration
-CUSTOM_CSS = """
+CUSTOM_CSS: str = """
 /* Checkerboard for transparent layer previews */
 .gallery-item img,
 div[data-testid="image"] img {

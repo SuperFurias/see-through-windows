@@ -3,11 +3,12 @@
 import logging
 import sys
 from pathlib import Path
+from typing import Optional
 
 from .config import SEETHROUGH_ROOT
 
 
-def setup_logger(name="seethrough_ui", level=logging.INFO):
+def setup_logger(name: str = "seethrough_ui", level: int = logging.INFO) -> logging.Logger:
     """Set up structured logger with consistent formatting."""
     logger = logging.getLogger(name)
     logger.setLevel(level)
@@ -41,5 +42,4 @@ def setup_logger(name="seethrough_ui", level=logging.INFO):
     return logger
 
 
-# Default logger instance
-logger = setup_logger()
+logger: logging.Logger = setup_logger()

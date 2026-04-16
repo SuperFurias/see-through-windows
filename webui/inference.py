@@ -1,10 +1,13 @@
 """Inference execution and management for See-through UI."""
 
+import json
 import os
 import sys
 import time
 import subprocess
+import threading
 from pathlib import Path
+from typing import Generator, List, Tuple, Optional, Dict, Any
 from PIL import Image
 import gradio as gr
 
@@ -13,28 +16,38 @@ from .utils import collect_layers, parse_log_status, get_vram_display, get_vram_
 from .logger import logger
 
 
-def validate_input(image_path, mode_str, resolution, seed_val, inference_steps):
+_inference_state: Dict[str, Any] = {
+    "running": False,
+    "proc": None,
+    "log_file": None,
+    "save_dir": None,
+    "layer_dir": None,
+    "log_path": None,
+    "baseline_vram": 0,
+    "start_time": 0,
+    "is_nf4": True,
+    "cpu_offload": False,
+    "resolution": 512,
+}
+
+
+def validate_input(image_path: Optional[str], mode_str: str, resolution: int, seed_val: int, inference_steps: int) -> Tuple[int, int, int]:
     """Validate inference input parameters."""
     if image_path is None:
         raise gr.Error("Please upload an image")
 
-    # Validate image file exists and is readable
     img_path = Path(image_path)
     if not img_path.exists():
         raise gr.Error("Image file not found")
 
-    # Security check: file size limit (10MB)
     file_size_mb = img_path.stat().st_size / (1024 * 1024)
     if file_size_mb > 10:
         raise gr.Error(f"Image file too large: {file_size_mb:.1f}MB. Maximum allowed is 10MB.")
 
     try:
-        from PIL import Image
         with Image.open(image_path) as img:
             if img.format.lower() not in ["png", "jpeg", "jpg", "webp"]:
                 raise gr.Error(f"Unsupported image format: {img.format}. Please use PNG, JPG, or WebP.")
-
-            # Validate image dimensions
             width, height = img.size
             if width < 128 or height < 128:
                 raise gr.Error(f"Image too small: {width}x{height}. Minimum required is 128x128.")
@@ -69,16 +82,15 @@ def validate_input(image_path, mode_str, resolution, seed_val, inference_steps):
     return seed_val, resolution, inference_steps
 
 
-def run_inference(image_path, mode_str, resolution, seed_val, tblr_split, inference_steps, cpu_offload):
-    """Run See-through inference. Generator that yields progressive updates."""
-    # Validate inputs
-    seed_val, resolution, inference_steps = validate_input(
-        image_path, mode_str, resolution, seed_val, inference_steps
-    )
+def start_inference(image_path: str, mode_str: str, resolution: int, seed_val: int, tblr_split: bool, inference_steps: int, cpu_offload: bool) -> Tuple[str, str]:
+    """Start inference in background. Returns (save_dir, status)."""
+    global _inference_state
+    
+    seed_val, resolution, inference_steps = validate_input(image_path, mode_str, resolution, seed_val, inference_steps)
+    
     logger.info(f"Starting inference for image: {image_path}")
     logger.info(f"Parameters: mode={mode_str}, resolution={resolution}, seed={seed_val}, steps={inference_steps}")
 
-    # --- Setup ---
     is_nf4 = "NF4" in mode_str
     img_stem = Path(image_path).stem
 
@@ -102,9 +114,6 @@ def run_inference(image_path, mode_str, resolution, seed_val, tblr_split, infere
     layer_dir = str(save_dir / safe_name)
     log_path = save_dir / "ui.log"
 
-    yield [], str(save_dir), "⏳ Starting inference..."
-
-    # --- Build command ---
     cmd = [
         sys.executable, str(SCRIPT_PATH),
         "--srcp", str(input_path),
@@ -126,107 +135,127 @@ def run_inference(image_path, mode_str, resolution, seed_val, tblr_split, infere
         "HF_HOME": str(HF_CACHE_DIR),
         "PYTHONPATH": str(SEETHROUGH_ROOT) + os.pathsep + str(SEETHROUGH_ROOT / "common") + os.pathsep + os.environ.get("PYTHONPATH", "")
     }
-    start_time = time.time()
+    
     logger.debug(f"Running command: {' '.join(cmd)}")
-
-    # Record baseline VRAM for tracking
+    start_time = time.time()
     baseline_vram, _ = get_vram_used_mb()
     logger.info(f"Baseline VRAM: {baseline_vram}MB")
 
-    # --- Run subprocess ---
-    proc = None
-    try:
-        with open(log_path, "w", encoding="utf-8") as log_file:
-            proc = subprocess.Popen(
-                cmd,
-                cwd=str(SEETHROUGH_ROOT),
-                stdout=log_file,
-                stderr=subprocess.STDOUT,
-                env=env,
-            )
-
-        while proc.poll() is None:
-            time.sleep(2)
-            layers = collect_layers(layer_dir)
-            elapsed = time.time() - start_time
-            elapsed_str = f"{int(elapsed // 60)}:{int(elapsed % 60):02d}"
-
-            # Parse log for detailed status
-            log_status = parse_log_status(str(log_path))
-            vram = get_vram_display(baseline_vram)
-            status_text = f"{log_status}\n⏱️ Elapsed Time: {elapsed_str}"
-            if layers:
-                status_text += f" | Layers: {len(layers)}"
-            if vram:
-                status_text += f"\n{vram}"
-
-            yield layers, str(save_dir), status_text
-    except GeneratorExit:
-        # Handle cancellation
-        if proc and proc.poll() is None:
-            try:
-                proc.terminate()
-                proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait()
-        raise
-    except Exception as e:
-        if proc and proc.poll() is None:
-            try:
-                proc.terminate()
-                proc.wait(timeout=3)
-            except:
-                pass
-        raise gr.Error(f"Inference interrupted: {str(e)}")
-
-    # --- Check result ---
-    if proc.returncode != 0:
-        err_tail = ""
-        if log_path.exists():
-            try:
-                err_tail = log_path.read_text(encoding="utf-8")[-500:]
-            except Exception:
-                err_tail = "Could not read error log"
-        logger.error(f"Inference failed with exit code {proc.returncode}")
-        logger.debug(f"Error log tail: {err_tail}")
-        raise gr.Error(f"Inference failed (exit code: {proc.returncode})\n{err_tail}")
-
-    # --- Final results ---
-    gallery = collect_layers(layer_dir)
-    elapsed = time.time() - start_time
-    minutes = int(elapsed // 60)
-    seconds = int(elapsed % 60)
-    logger.info(f"Inference completed successfully in {minutes}m{seconds}s")
-    logger.info(f"Generated {len(gallery)} layers")
-    mode_label = "NF4" if is_nf4 else "Full bf16"
-    if cpu_offload:
-        mode_label += " + CPU Offload"
-
-    # Count PSD files
-    psd_count = sum(
-        1 for f in os.listdir(str(save_dir))
-        if f.endswith(".psd")
-    ) if save_dir.exists() else 0
-
-    # Read peak VRAM from stats.json
-    import json as _json
-    peak_vram_str = ""
-    stats_path = save_dir / safe_name / "stats.json"
-    if stats_path.exists():
-        try:
-            with open(stats_path, "r") as sf:
-                stats_data = _json.load(sf)
-            peak_gb = stats_data.get("peak_vram_gb", 0)
-            peak_vram_str = f" | Peak VRAM: {peak_gb:.1f}GB"
-        except Exception:
-            pass
-
-    status = (
-        f"✅ Completed! ({minutes}m{seconds}s)\n"
-        f"Mode: {mode_label} | Resolution: {resolution} | "
-        f"Layers: {len(gallery)} | PSD: {psd_count} files{peak_vram_str}\n"
-        f"📂 Output: {save_dir}"
+    log_file = open(log_path, "w", encoding="utf-8")
+    proc = subprocess.Popen(
+        cmd,
+        cwd=str(SEETHROUGH_ROOT),
+        stdout=log_file,
+        stderr=subprocess.STDOUT,
+        env=env,
     )
 
-    yield gallery, str(save_dir), status
+    _inference_state = {
+        "running": True,
+        "proc": proc,
+        "log_file": log_file,
+        "save_dir": str(save_dir),
+        "layer_dir": layer_dir,
+        "log_path": str(log_path),
+        "baseline_vram": baseline_vram,
+        "start_time": start_time,
+        "is_nf4": is_nf4,
+        "cpu_offload": cpu_offload,
+        "resolution": resolution,
+        "safe_name": safe_name,
+    }
+
+    return str(save_dir), "⏳ Inference started..."
+
+
+def poll_inference(save_dir: str) -> Tuple[List, str, str, Any]:
+    """Poll inference status. Returns (layers, save_dir, status, timer_update)."""
+    global _inference_state
+    
+    if not _inference_state.get("running", False):
+        return [], save_dir, "❌ No inference running", gr.Timer(active=False)
+
+    proc = _inference_state.get("proc")
+    if proc is None:
+        return [], save_dir, "❌ No process found", gr.Timer(active=False)
+
+    log_file = _inference_state.get("log_file")
+    if log_file:
+        log_file.flush()
+        os.fsync(log_file.fileno())
+
+    layer_dir = _inference_state.get("layer_dir", "")
+    log_path = _inference_state.get("log_path", "")
+    log_path = _inference_state.get("log_path", "")
+    baseline_vram = _inference_state.get("baseline_vram", 0)
+    start_time = _inference_state.get("start_time", time.time())
+
+    if proc.poll() is not None:
+        _inference_state["running"] = False
+        if log_file:
+            log_file.close()
+
+        if proc.returncode != 0:
+            err_tail = ""
+            if log_path and Path(log_path).exists():
+                try:
+                    with open(log_path, "r", encoding="utf-8") as f:
+                        f.seek(0, 2)
+                        f.seek(max(0, f.tell() - 500))
+                        err_tail = f.read()
+                except Exception:
+                    err_tail = "Could not read error log"
+            logger.error(f"Inference failed with exit code {proc.returncode}")
+            return [], save_dir, f"❌ Inference failed (exit code: {proc.returncode})\n{err_tail}", gr.Timer(active=False)
+
+        elapsed = time.time() - start_time
+        minutes = int(elapsed // 60)
+        seconds = int(elapsed % 60)
+        
+        gallery = collect_layers(layer_dir)
+        logger.info(f"Inference completed successfully in {minutes}m{seconds}s")
+        logger.info(f"Generated {len(gallery)} layers")
+
+        save_dir_path = Path(save_dir)
+        psd_count = sum(1 for f in os.listdir(save_dir) if f.endswith(".psd")) if save_dir_path.exists() else 0
+
+        peak_vram_str = ""
+        safe_name = _inference_state.get("safe_name", "")
+        stats_path = save_dir_path / safe_name / "stats.json"
+        if stats_path.exists():
+            try:
+                with open(stats_path, "r") as sf:
+                    stats_data = json.load(sf)
+                peak_gb = stats_data.get("peak_vram_gb", 0)
+                peak_vram_str = f" | Peak VRAM: {peak_gb:.1f}GB"
+            except Exception:
+                pass
+
+        mode_label = "NF4" if _inference_state.get("is_nf4", True) else "Full bf16"
+        if _inference_state.get("cpu_offload", False):
+            mode_label += " + CPU Offload"
+
+        status = (
+            f"✅ Completed! ({minutes}m{seconds}s)\n"
+            f"Mode: {mode_label} | Resolution: {_inference_state.get('resolution', 512)} | "
+            f"Layers: {len(gallery)} | PSD: {psd_count} files{peak_vram_str}\n"
+            f"📂 Output: {save_dir}"
+        )
+
+        return gallery, save_dir, status, gr.Timer(active=False)
+
+    layers = collect_layers(layer_dir)
+    elapsed = time.time() - start_time
+    elapsed_str = f"{int(elapsed // 60)}:{int(elapsed % 60):02d}"
+
+    log_status = parse_log_status(log_path)
+    vram = get_vram_display(baseline_vram)
+    status_text = f"{log_status}\n⏱️ Elapsed Time: {elapsed_str}"
+    if layers:
+        status_text += f" | Layers: {len(layers)}"
+    if vram:
+        status_text += f"\n{vram}"
+
+    logger.debug(f"Poll: elapsed={elapsed:.1f}s, start_time={start_time}, layers={len(layers)}")
+
+    return layers, save_dir, status_text, gr.Timer()

@@ -119,19 +119,20 @@ if not exist "%PROJECT_DIR%\assets" (
 
 echo.
 echo ============================================================
-echo   Installation Complete!
+echo Installation Complete!
 echo ============================================================
 echo.
 echo Project location: %PROJECT_DIR%
 echo.
-echo Run the WebUI:
-echo   run_seethrough_webui.bat
+echo Available scripts:
+echo   run_seethrough_webui.bat    - Launch WebUI (Recommended)
+echo   run_seethrough.bat          - Launch Qt UI
+echo   run_seethrough_cli.bat      - CLI inference (drag image onto file)
+echo   run_seethrough_lowmem.bat   - CLI inference (low VRAM)
+echo   run_seethrough_demo.bat     - Launch Jupyter demo
 echo.
-echo Run CLI inference:
-echo   run_seethrough_cli.bat image.png
-echo.
-echo Run CLI inference (low VRAM):
-echo   run_seethrough_lowmem.bat image.png
+echo First time? Run: run_seethrough_webui.bat
+echo Then open: http://127.0.0.1:7860
 echo.
 
 pause

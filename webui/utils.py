@@ -1,21 +1,27 @@
 """Utility functions for See-through WebUI."""
 
 import os
+import platform
 import re
 import subprocess
+import sys
+import time
 from pathlib import Path
+from typing import Dict, List, Optional, Tuple
 
 from .config import LAYER_ORDER, SKIP_TAGS, STAGE_MARKERS, OUTPUT_BASE
 
+_LAYER_ORDER_MAP: Dict[str, int] = {tag: i for i, tag in enumerate(LAYER_ORDER)}
 
-def _tag_sort_key(tag):
-    try:
-        return LAYER_ORDER.index(tag)
-    except ValueError:
-        return len(LAYER_ORDER)
+_last_vram_check: Tuple[float, Tuple[int, int]] = (0.0, (0, 0))
+_VRAM_CACHE_SECONDS: float = 1.0
 
 
-def collect_layers(output_dir):
+def _tag_sort_key(tag: str) -> int:
+    return _LAYER_ORDER_MAP.get(tag, len(LAYER_ORDER))
+
+
+def collect_layers(output_dir: str) -> List[Tuple[str, str]]:
     """Collect layer PNGs as (filepath, label) tuples for the gallery."""
     if not os.path.isdir(output_dir):
         return []
@@ -31,7 +37,7 @@ def collect_layers(output_dir):
     return layers
 
 
-def parse_log_status(log_path):
+def parse_log_status(log_path: str) -> str:
     """Parse log file tail to extract current stage and progress bar."""
     if not os.path.exists(log_path):
         return "⏳ Initializing model... (May take a few minutes first time)"
@@ -39,7 +45,7 @@ def parse_log_status(log_path):
     try:
         size = os.path.getsize(log_path)
         with open(log_path, "r", encoding="utf-8", errors="ignore") as f:
-            f.seek(max(0, size - 6000))
+            f.seek(max(0, size - 15000))
             tail = f.read()
     except Exception:
         return "⏳ Initializing model..."
@@ -49,85 +55,97 @@ def parse_log_status(log_path):
 
     # Detect current stage (last match wins)
     current_stage = "⏳ Initializing model... (May take a few minutes first time)"
+    current_stage_keyword = ""
     for keyword, label in STAGE_MARKERS:
         if keyword in tail:
             current_stage = label
+            current_stage_keyword = keyword
 
-    # Extract latest tqdm / loading progress from \r-delimited segments
+    # Extract progress from AFTER the current stage marker
     progress_line = ""
-    parts = tail.split("\r")
-    for part in reversed(parts):
-        part = part.strip()
-        if not part:
-            continue
+    if current_stage_keyword:
+        stage_pos = tail.rfind(current_stage_keyword)
+        if stage_pos >= 0:
+            tail_after_stage = tail[stage_pos:]
+        else:
+            tail_after_stage = tail
+    else:
+        tail_after_stage = tail
 
-        # tqdm diffusion steps: " 50%|█████     | 15/30 [01:38<01:40, 6.69s/it]"
-        m = re.search(
-            r"(\d+)%\|([^|]+)\|\s*(\d+)/(\d+)\s*\[([^\]<]+)<([^\]]+)\]", part
-        )
-        if m:
-            pct, bar, cur, total, elapsed, eta = m.groups()
-            progress_line = f"{pct}% |{bar.strip()}| {cur}/{total} | ⏱️ {elapsed} | ⏳ ETA: {eta}"
-            break
+    # Find all percentage matches and take the LAST one (most recent)
+    # Format: "0%| | 0/20" or "5%|5 | 1/20" or "100%|##########| 20/20"
+    matches = list(re.finditer(r"(\d+)%\|[^|]*\|\s*(\d+)/(\d+)", tail_after_stage))
+    if matches:
+        last_match = matches[-1]
+        pct = last_match.group(1)
+        cur = last_match.group(2)
+        total = last_match.group(3)
+        pct_int = int(pct)
+        filled = pct_int // 5
+        empty = 20 - filled
+        progress_bar = "█" * filled + "·" * empty
+        progress_line = f"{pct}% [{progress_bar}] {cur}/{total}"
 
-        # Fallback for format without ETA
-        m = re.search(
-            r"(\d+)%\|([^|]+)\|\s*(\d+)/(\d+)\s*\[([^\]]+)\]", part
-        )
-        if m:
-            pct, bar, cur, total, timing = m.groups()
-            progress_line = f"{pct}% |{bar.strip()}| {cur}/{total} [{timing}]"
-            break
-
-        # Loading weights / pipeline components
-        m = re.search(r"Loading (\w+).*?(\d+)%\|([^|]+)\|\s*(\d+)/(\d+)", part)
-        if m:
-            what, pct, bar, cur, total = m.groups()
-            label = "Loading Weights" if what == "weights" else "Loading Pipeline"
-            progress_line = f"{label}: {pct}% |{bar.strip()}| {cur}/{total}"
-            break
-
+    # If no progress found, show indeterminate state
+    if not progress_line and current_stage_keyword:
+        progress_line = "⏳ Processing..."
+    
     if progress_line:
         return f"{current_stage}\n{progress_line}"
     return current_stage
 
 
-def open_output_folder(output_path, output_base=None):
-    """Open the output folder in Windows Explorer."""
+def open_output_folder(output_path: Optional[str], output_base: Optional[Path] = None) -> None:
+    """Open the output folder in the system file manager (cross-platform)."""
     if output_base is None:
         output_base = OUTPUT_BASE
 
-    # Sanitize path and prevent directory traversal
     if output_path:
         output_path = Path(output_path).resolve()
         output_base = Path(output_base).resolve()
 
-        # Ensure path is within output base
         if not str(output_path).startswith(str(output_base)):
             output_path = None
 
-    target = output_path if output_path and os.path.isdir(output_path) else str(output_base)
+    target = str(output_path) if output_path and os.path.isdir(output_path) else str(output_base)
     os.makedirs(target, exist_ok=True)
-    os.startfile(target)
+
+    system = platform.system()
+    if system == "Windows":
+        os.startfile(target)
+    elif system == "Darwin":
+        subprocess.run(["open", target], check=False)
+    else:
+        subprocess.run(["xdg-open", target], check=False)
 
 
-def get_vram_used_mb():
-    """Get total VRAM used in MB via nvidia-smi."""
+def get_vram_used_mb() -> Tuple[int, int]:
+    """Get total VRAM used in MB via nvidia-smi (cached to reduce overhead)."""
+    global _last_vram_check
+    
+    current_time = time.time()
+    cached_time, cached_values = _last_vram_check
+    
+    if current_time - cached_time < _VRAM_CACHE_SECONDS:
+        return cached_values
+    
     try:
         r = subprocess.run(
-            ["nvidia-smi", "--query-gpu=memory.used,memory.total",
-             "--format=csv,noheader,nounits"],
+            ["nvidia-smi", "--query-gpu=memory.used,memory.total", "--format=csv,noheader,nounits"],
             capture_output=True, text=True, timeout=3,
         )
         if r.returncode == 0:
-            used, total = r.stdout.strip().split(", ")
-            return int(used), int(total)
+            parts = r.stdout.strip().split(", ")
+            if len(parts) == 2:
+                result = (int(parts[0]), int(parts[1]))
+                _last_vram_check = (current_time, result)
+                return result
     except Exception:
         pass
     return 0, 0
 
 
-def get_vram_display(baseline_mb):
+def get_vram_display(baseline_mb: int) -> str:
     """Show VRAM usage: See-through delta + total."""
     used, total = get_vram_used_mb()
     if total == 0:
