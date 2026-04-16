@@ -16,7 +16,7 @@ _LAYER_ORDER_MAP: Dict[str, int] = {tag: i for i, tag in enumerate(LAYER_ORDER)}
 _last_vram_check: Tuple[float, Tuple[int, int]] = (0.0, (0, 0))
 _VRAM_CACHE_SECONDS: float = 1.0
 
-_pass_state: Dict[str, Any] = {
+_pass_state: Dict[str, any] = {
     "stage": "",
     "last_progress_pct": -1,
     "pass_count": 0,
