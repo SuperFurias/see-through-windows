@@ -29,8 +29,9 @@ Then open http://127.0.0.1:7860 in your browser.
 | `install_seethrough.bat` | **One-time installer** | Run once to set up everything |
 | `run_seethrough_webui.bat` | **Recommended** - Gradio WebUI | Double-click to launch, opens browser automatically |
 | `run_seethrough.bat` | Qt UI (Live2D annotation tool) | Double-click to launch |
-| `run_seethrough_cli.bat` | CLI inference (full quality) | Drag image onto file or run with path argument |
-| `run_seethrough_lowmem.bat` | CLI inference (low VRAM) | Drag image onto file or run with path argument |
+| `run_seethrough_cli.bat` | CLI inference (full quality) | Drag image onto file or `run_seethrough_cli.bat [image] [resolution]` |
+| `run_seethrough_lowmem.bat` | CLI inference (low VRAM, NF4) | Drag image onto file or `run_seethrough_lowmem.bat [image] [resolution]` |
+| `run_seethrough_blockswap.bat` | CLI inference (ultra-low VRAM bf16 blockswap) | `run_seethrough_blockswap.bat [image] [resolution]` |
 | `run_seethrough_demo.bat` | Jupyter notebook demo | Double-click to launch |
 
 ## Requirements

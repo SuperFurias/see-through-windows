@@ -1,6 +1,10 @@
 # see-through repository (cloned by installer)
 see-through/
 
+# Portable uv package manager (downloaded by installer)
+uv/
+uv.zip
+
 # Python
 __pycache__/
 *.py[cod]

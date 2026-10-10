@@ -16,12 +16,20 @@ if "%~1"=="" (
     set "INPUT_PATH=%~1"
 )
 
+if "%~2"=="" (
+    set "RESOLUTION=1280"
+) else (
+    set "RESOLUTION=%~2"
+)
+
 echo.
 echo Running quantized See-through pipeline on: !INPUT_PATH!
 echo This uses NF4 quantization for lower VRAM usage (~8GB).
+echo Resolution: !RESOLUTION!
+echo Usage: %~nx0 [image_path] [resolution]
 echo.
 
-python inference/scripts/inference_psd_quantized.py --srcp "!INPUT_PATH!" --save_to_psd
+python inference/scripts/inference_psd_quantized.py --srcp "!INPUT_PATH!" --save_to_psd --resolution !RESOLUTION! --tblr_split
 
 echo.
 echo Done! Output saved to workspace/layerdiff_output/

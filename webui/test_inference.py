@@ -50,7 +50,9 @@ class TestValidateInput:
             with pytest.raises(gr.Error, match="Invalid seed value"):
                 validate_input(str(img_path), "NF4", 768, -1, 20)
 
-    def test_resolution_out_of_range(self, tmp_path):
+    def test_resolution_invalid_type(self, tmp_path):
+        # NOTE: numeric resolutions are clamped to 512-2048 (not rejected),
+        # so only a non-numeric value triggers "Invalid resolution".
         img_path = tmp_path / "test.png"
         img_path.touch()
         with patch("PIL.Image.open") as mock_open:
@@ -60,9 +62,23 @@ class TestValidateInput:
             mock_img.__enter__ = MagicMock(return_value=mock_img)
             mock_img.__exit__ = MagicMock(return_value=False)
             mock_open.return_value = mock_img
-            
+
             with pytest.raises(gr.Error, match="Invalid resolution"):
-                validate_input(str(img_path), "NF4", 100, 42, 20)
+                validate_input(str(img_path), "NF4", "not_a_number", 42, 20)
+
+    def test_resolution_clamping(self, tmp_path):
+        img_path = tmp_path / "test.png"
+        img_path.touch()
+        with patch("PIL.Image.open") as mock_open:
+            mock_img = MagicMock()
+            mock_img.format = "PNG"
+            mock_img.size = (512, 512)
+            mock_img.__enter__ = MagicMock(return_value=mock_img)
+            mock_img.__exit__ = MagicMock(return_value=False)
+            mock_open.return_value = mock_img
+
+            _, resolution, _ = validate_input(str(img_path), "NF4", 100, 42, 20)
+            assert resolution == 512
 
     def test_inference_steps_out_of_range(self, tmp_path):
         img_path = tmp_path / "test.png"
@@ -90,6 +106,24 @@ class TestValidateInput:
             mock_open.return_value = mock_img
             
             seed, resolution, steps = validate_input(str(img_path), "NF4", 768, 42, 20)
+            assert seed == 42
+            assert resolution == 768
+            assert steps == 20
+
+    def test_valid_blockswap_mode(self, tmp_path):
+        img_path = tmp_path / "test.png"
+        img_path.touch()
+        with patch("PIL.Image.open") as mock_open:
+            mock_img = MagicMock()
+            mock_img.format = "PNG"
+            mock_img.size = (512, 512)
+            mock_img.__enter__ = MagicMock(return_value=mock_img)
+            mock_img.__exit__ = MagicMock(return_value=False)
+            mock_open.return_value = mock_img
+
+            seed, resolution, steps = validate_input(
+                str(img_path), "Blockswap (Low-VRAM bf16・slowest)", 768, 42, 20
+            )
             assert seed == 42
             assert resolution == 768
             assert steps == 20

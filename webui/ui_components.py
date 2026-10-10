@@ -55,6 +55,7 @@ def build_ui(start_inference_fn: Callable, poll_inference_fn: Callable, open_fol
                         choices=[
                             "NF4 Quantized (Recommended・VRAM ~7GB)",
                             "Full bf16 (High Quality・VRAM ~10GB)",
+                            "Blockswap (Low-VRAM bf16・slowest)",
                         ],
                         value=saved.get("mode", "NF4 Quantized (Recommended・VRAM ~7GB)"),
                         label="Inference Mode",
@@ -105,7 +106,8 @@ def build_ui(start_inference_fn: Callable, poll_inference_fn: Callable, open_fol
                 gr.Markdown(
                     "---\n"
                     "**Output Destination**: `workspace/ui_output/` | "
-                    "**Estimated Inference Time**: NF4 ~7min, Full ~7min (RTX 3090)",
+                    "**Estimated Inference Time**: NF4 ~7min, Full ~7min, Blockswap slower (RTX 3090) | "
+                    "Blockswap ignores CPU Offload (built-in)",
                     elem_classes=["header-text"],
                 )
 

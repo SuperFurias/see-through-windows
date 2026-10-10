@@ -5,6 +5,7 @@ from typing import Dict, List, Tuple
 
 SEETHROUGH_ROOT: Path = Path(__file__).resolve().parent.parent / "see-through"
 SCRIPT_PATH: Path = SEETHROUGH_ROOT / "inference" / "scripts" / "inference_psd_quantized.py"
+BLOCKSWAP_SCRIPT_PATH: Path = SEETHROUGH_ROOT / "inference" / "scripts" / "inference_psd_blockswap.py"
 HF_CACHE_DIR: Path = SEETHROUGH_ROOT / ".hf_cache"
 OUTPUT_BASE: Path = SEETHROUGH_ROOT / "workspace" / "ui_output"
 
@@ -20,6 +21,8 @@ LAYER_ORDER: List[str] = [
 
 STAGE_MARKERS: List[Tuple[str, str]] = [
     ("Quantized inference:", "📋 Inference Settings"),
+    ("Building Blockswap pipeline", "🔨 Building Blockswap Pipeline (low-VRAM)..."),
+    ("Running LayerDiff3D (body + head) with blockswap", "🎨 Running LayerDiff Blockswap Inference (body + head)..."),
     ("Building LayerDiff", "🔨 Building LayerDiff Pipeline..."),
     ("[NF4 fix]", "🔧 Fixing NF4 Text Encoder..."),
     ("Running LayerDiff", "🎨 Running LayerDiff Inference (body + head)..."),

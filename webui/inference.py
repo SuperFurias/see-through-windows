@@ -11,7 +11,7 @@ from typing import Generator, List, Tuple, Optional, Dict, Any
 from PIL import Image
 import gradio as gr
 
-from .config import SCRIPT_PATH, HF_CACHE_DIR, OUTPUT_BASE, SEETHROUGH_ROOT
+from .config import SCRIPT_PATH, BLOCKSWAP_SCRIPT_PATH, HF_CACHE_DIR, OUTPUT_BASE, SEETHROUGH_ROOT
 from .utils import collect_layers, parse_log_status, get_vram_display, get_vram_used_mb
 from .logger import logger
 
@@ -26,6 +26,7 @@ _inference_state: Dict[str, Any] = {
     "baseline_vram": 0,
     "start_time": 0,
     "is_nf4": True,
+    "is_blockswap": False,
     "cpu_offload": False,
     "resolution": 512,
 }
@@ -56,7 +57,7 @@ def validate_input(image_path: Optional[str], mode_str: str, resolution: int, se
     except Exception as e:
         raise gr.Error(f"Invalid image file: {str(e)}")
 
-    if not mode_str or not any(m in mode_str for m in ["NF4", "Full bf16"]):
+    if not mode_str or not any(m in mode_str for m in ["NF4", "Full bf16", "Blockswap"]):
         raise gr.Error("Invalid inference mode selected")
 
     try:
@@ -92,6 +93,7 @@ def start_inference(image_path: str, mode_str: str, resolution: int, seed_val: i
     logger.info(f"Parameters: mode={mode_str}, resolution={resolution}, seed={seed_val}, steps={inference_steps}")
 
     is_nf4 = "NF4" in mode_str
+    is_blockswap = "Blockswap" in mode_str
     img_stem = Path(image_path).stem
 
     safe_name = "".join(c if c.isalnum() or c in "-_" else "_" for c in img_stem)
@@ -114,21 +116,44 @@ def start_inference(image_path: str, mode_str: str, resolution: int, seed_val: i
     layer_dir = str(save_dir / safe_name)
     log_path = save_dir / "ui.log"
 
-    cmd = [
-        sys.executable, str(SCRIPT_PATH),
-        "--srcp", str(input_path),
-        "--save_to_psd",
-        "--save_dir", str(save_dir),
-        "--seed", str(seed_val),
-        "--resolution", str(resolution),
-        "--num_inference_steps", str(inference_steps),
-        "--quant_mode", "nf4" if is_nf4 else "none",
-        "--no_group_offload",
-    ]
-    if not tblr_split:
-        cmd.append("--no_tblr_split")
-    if cpu_offload:
-        cmd.append("--cpu_offload")
+    if is_blockswap:
+        # inference_psd_blockswap.py has no --quant_mode / --group_offload /
+        # --cpu_offload flags (strict bf16 + permanent offload + UNet blockswap
+        # are built in). Only pass flags it accepts.
+        script = BLOCKSWAP_SCRIPT_PATH
+        if not script.exists():
+            raise gr.Error(f"Blockswap script not found: {script}. Update your see-through checkout (git -C see-through pull).")
+        cmd = [
+            sys.executable, str(script),
+            "--srcp", str(input_path),
+            "--save_to_psd",
+            "--save_dir", str(save_dir),
+            "--seed", str(seed_val),
+            "--resolution", str(resolution),
+            "--num_inference_steps", str(inference_steps),
+        ]
+        if tblr_split:
+            cmd.append("--tblr_split")
+        if cpu_offload:
+            logger.warning("CPU Offload checkbox is ignored in Blockswap mode (offload is built-in).")
+    else:
+        cmd = [
+            sys.executable, str(SCRIPT_PATH),
+            "--srcp", str(input_path),
+            "--save_to_psd",
+            "--save_dir", str(save_dir),
+            "--seed", str(seed_val),
+            "--resolution", str(resolution),
+            "--num_inference_steps", str(inference_steps),
+            "--quant_mode", "nf4" if is_nf4 else "none",
+            "--no_group_offload",
+        ]
+        # NOTE: upstream scripts use store_true --tblr_split (default off);
+        # there is no --no_tblr_split flag, so only append when enabled.
+        if tblr_split:
+            cmd.append("--tblr_split")
+        if cpu_offload:
+            cmd.append("--cpu_offload")
 
     env = {
         **os.environ,
@@ -160,6 +185,7 @@ def start_inference(image_path: str, mode_str: str, resolution: int, seed_val: i
         "baseline_vram": baseline_vram,
         "start_time": start_time,
         "is_nf4": is_nf4,
+        "is_blockswap": is_blockswap,
         "cpu_offload": cpu_offload,
         "resolution": resolution,
         "safe_name": safe_name,
@@ -231,9 +257,12 @@ def poll_inference(save_dir: str) -> Tuple[List, str, str, Any]:
             except Exception:
                 pass
 
-        mode_label = "NF4" if _inference_state.get("is_nf4", True) else "Full bf16"
-        if _inference_state.get("cpu_offload", False):
-            mode_label += " + CPU Offload"
+        if _inference_state.get("is_blockswap", False):
+            mode_label = "Blockswap (low-VRAM bf16)"
+        else:
+            mode_label = "NF4" if _inference_state.get("is_nf4", True) else "Full bf16"
+            if _inference_state.get("cpu_offload", False):
+                mode_label += " + CPU Offload"
 
         status = (
             f"✅ Completed! ({minutes}m{seconds}s)\n"

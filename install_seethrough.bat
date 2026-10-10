@@ -95,7 +95,7 @@ if %errorlevel% neq 0 (
     echo [WARN] detectron2 prebuilt wheel not found, trying from source...
     "%UV_EXE%" pip install --no-build-isolation "detectron2 @ git+https://github.com/facebookresearch/detectron2@a25898a09d6ee232767647e92c6177fb1c642369" 2>nul
 )
-"%UV_EXE%" pip install hydra-core pydantic>=2.9.2
+"%UV_EXE%" pip install hydra-core "pydantic>=2.9.2"
 
 echo.
 echo Installing SAM2...
